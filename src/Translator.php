@@ -73,7 +73,7 @@ class Translator
         if (!isset($this->dictionary[$domain])) {
             $this->dictionary[$domain] = $translations;
         } else {
-            $this->dictionary[$domain] = array_replace_recursive($this->dictionary[$domain], $translations);
+            $this->dictionary[$domain] = array_replace($this->dictionary[$domain], $translations);
         }
     }
 
