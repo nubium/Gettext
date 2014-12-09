@@ -3,15 +3,20 @@ namespace Gettext;
 
 use Exception;
 use Gettext\Generators\PhpArray;
+use Gettext\Utils\Plural;
 
 class Translator
 {
     private $dictionary = array();
     private $domain = 'messages';
     private $context_glue = "\004";
-    private $pluralCount = 2;
-    private $pluralCode = 'return ($n != 1);';
-    private $pluralFunction;
+    private $plural = null;
+
+    public function __construct()
+    {
+        // default plural
+        $this->plural = new Plural(2, 'return ($n != 1);');
+    }
 
     /**
      * Loads translation from a Translations instance, a file on an array
@@ -43,28 +48,25 @@ class Translator
     protected function loadArray(array $translations)
     {
         $domain = isset($translations['messages']['']['domain']) ? $translations['messages']['']['domain'] : null;
+        $plural = null;
 
         // If a plural form is set we extract those values
         if (isset($translations['messages']['']['plural-forms'])) {
-            list($count, $code) = explode(';', $translations['messages']['']['plural-forms']);
-            $this->pluralCount = (int) str_replace('nplurals=', '', $count);
-
-            // extract just the expression turn 'n' into a php variable '$n'.
-            // Slap on a return keyword and semicolon at the end.
-            $this->pluralCode = str_replace('plural=', 'return ', str_replace('n', '$n', $code)).';';
+            $plural = Plural::createFromCode($translations['messages']['']['plural-forms']);
         }
 
         unset($translations['messages']['']);
-        $this->addTranslations($translations['messages'], $domain);
+        $this->addTranslations($translations['messages'], $domain, $plural);
     }
 
     /**
      * Set new translations to the dictionary
      *
-     * @param array       $translations
+     * @param array $translations
      * @param null|string $domain
+     * @param Plural $plural Plural of translations. If not set, we use default one. If set, all keys which not overrided by new translations use old plural
      */
-    public function addTranslations(array $translations, $domain = null)
+    public function addTranslations(array $translations, $domain = null, Plural $plural = null)
     {
         if ($domain === null) {
             $domain = $this->domain;
@@ -74,6 +76,20 @@ class Translator
             $this->dictionary[$domain] = $translations;
         } else {
             $this->dictionary[$domain] = array_replace($this->dictionary[$domain], $translations);
+
+            if ($plural != null) {
+                $diffKeys = array_diff_key($this->dictionary[$domain], $translations);
+
+                // Exchange default plural ... New messages replaces old messages
+                foreach ($diffKeys as $key => $val) {
+                    $this->dictionary[$domain][$key]['_plural'] = $this->plural;
+                }
+            }
+        }
+
+        if ($plural != null) {
+            // Setup new default plural
+            $this->plural = $plural;
         }
     }
 
@@ -214,8 +230,8 @@ class Translator
      */
     public function dnpgettext($domain, $context, $original, $plural, $value)
     {
-        $key = $this->isPlural($value);
         $translation = $this->getTranslation($domain, $context, $original);
+        $key = $this->isPlural($value, (isset($translation['_plural']) ? $translation['_plural'] : null));
 
         if (isset($translation[$key]) && $translation[$key] !== '') {
             return $translation[$key];
@@ -229,67 +245,17 @@ class Translator
      * plural version to take.
      *
      * @param  string $n
+     * @param  Plural $plural Plural (if not set, used default plural = 0)
      * @return int
      */
-    public function isPlural($n)
+    public function isPlural($n, Plural $plural = null)
     {
-        if (!$this->pluralFunction) {
-            $this->pluralFunction = create_function('$n', self::fixTerseIfs($this->pluralCode));
+        if ($plural == null && $this->plural != null) {
+            $plural = $this->plural;
+        } else if ($plural == null) {
+            return false;
         }
 
-        if ($this->pluralCount <= 2) {
-            return (call_user_func($this->pluralFunction, $n)) ? 2 : 1;
-        }
-
-        // We need to +1 because while (GNU) gettext codes assume 0 based,
-        // this gettext actually stores 1 based.
-        return (call_user_func($this->pluralFunction, $n)) + 1;
-    }
-
-    /**
-     * This function will recursively wrap failure states in brackets if they contain a nested terse if
-     *
-     * This because PHP can not handle nested terse if's unless they are wrapped in brackets.
-     *
-     * This code probably only works for the gettext plural decision codes.
-     *
-     * return ($n==1 ? 0 : $n%10>=2 && $n%10<=4 && ($n%100<10 || $n%100>=20) ? 1 : 2);
-     * becomes
-     * return ($n==1 ? 0 : ($n%10>=2 && $n%10<=4 && ($n%100<10 || $n%100>=20) ? 1 : 2));
-     *
-     * @param  string $code  the terse if string
-     * @param  bool   $inner If inner is true we wrap it in brackets
-     * @return string A formatted terse If that PHP can work with.
-     */
-    private static function fixTerseIfs($code, $inner = false)
-    {
-        /**
-         * (?P<expression>[^?]+)   Capture everything up to ? as 'expression'
-         * \?                      ?
-         * (?P<success>[^:]+)      Capture everything up to : as 'success'
-         * :                       :
-         * (?P<failure>[^;]+)      Capture everything up to ; as 'failure'
-         */
-        preg_match('/(?P<expression>[^?]+)\?(?P<success>[^:]+):(?P<failure>[^;]+)/', $code, $matches);
-
-        // If no match was found then no terse if was present
-        if (!isset($matches[0])) {
-            return $code;
-        }
-
-        $expression = $matches['expression'];
-        $success    = $matches['success'];
-        $failure    = $matches['failure'];
-
-        // Go look for another terse if in the failure state.
-        $failure = self::fixTerseIfs($failure, true);
-        $code = $expression.' ? '.$success.' : '.$failure;
-
-        if ($inner) {
-            return "($code)";
-        }
-
-        // note the semicolon. We need that for executing the code.
-        return "$code;";
+        return $plural->isPlural($n);
     }
 }
