@@ -20,6 +20,9 @@
 	"require": {
 		"php": ">=5.3.0"
 	},
+	"require-dev": {
+		"phpunit/phpunit": "*"
+	},
 	"suggest": {
 		"illuminate/view": "Is necessary if you want use the Blade extractor"
 	},
